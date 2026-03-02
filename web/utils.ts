@@ -1,24 +1,11 @@
 export function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) {
-    return "Just now";
-  }
-  if (diffMins < 60) {
-    return `${diffMins}m`;
-  }
-  if (diffHours < 24) {
-    return `${diffHours}h`;
-  }
-  if (diffDays < 7) {
-    return `${diffDays}d`;
-  }
-  return date.toLocaleDateString();
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const h = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  return `${y}-${m}-${d} ${h}:${min}`;
 }
 
 const SANITIZE_PATTERNS = [
