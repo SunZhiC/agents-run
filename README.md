@@ -49,6 +49,13 @@ Install globally via npm:
 npm install -g agents-run
 ```
 
+If you prefer Homebrew:
+
+```bash
+brew tap SunZhiC/agents-run
+brew install agents-run
+```
+
 Then run it from any directory:
 
 ```bash
@@ -115,4 +122,4 @@ pnpm demo:gif
 
 ## License
 
-MIT © Kamran Ahmed
+MIT
