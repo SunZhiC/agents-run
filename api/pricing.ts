@@ -435,7 +435,8 @@ export interface SessionCosts {
   cache_write_1h: number;
   cache_read: number;
   total: number;
-  has_long_context: boolean;
+  /** Whether any turns hit the long-context threshold. null = cannot determine (e.g. Codex cumulative data). */
+  has_long_context: boolean | null;
 }
 
 /**
@@ -465,12 +466,17 @@ export function calculateSessionCosts(
     const outputPrice = isLong
       ? (pricing.longContextOutput ?? pricing.output)
       : pricing.output;
+    // Cache prices are defined as multipliers of the input price (e.g. 0.1x).
+    // In long-context mode, scale them by the same ratio as input price.
+    const longRatio = isLong && pricing.input > 0
+      ? pricing.longContextInput! / pricing.input
+      : 1;
 
     inputCost += tokenCost(turn.input_tokens, inputPrice);
     outputCost += tokenCost(turn.output_tokens, outputPrice);
-    cacheReadCost += tokenCost(turn.cache_read_tokens, pricing.cacheRead ?? 0);
-    cacheWrite5mCost += tokenCost(turn.cache_write_5m_tokens, pricing.cacheWrite5m ?? 0);
-    cacheWrite1hCost += tokenCost(turn.cache_write_1h_tokens, pricing.cacheWrite1h ?? 0);
+    cacheReadCost += tokenCost(turn.cache_read_tokens, (pricing.cacheRead ?? 0) * longRatio);
+    cacheWrite5mCost += tokenCost(turn.cache_write_5m_tokens, (pricing.cacheWrite5m ?? 0) * longRatio);
+    cacheWrite1hCost += tokenCost(turn.cache_write_1h_tokens, (pricing.cacheWrite1h ?? 0) * longRatio);
   }
 
   const total = inputCost + outputCost + cacheReadCost + cacheWrite5mCost + cacheWrite1hCost;
@@ -506,7 +512,7 @@ export function calculateAggregateCosts(
     cache_write_1h: cacheWrite1hCost,
     cache_read: cacheReadCost,
     total,
-    has_long_context: false,
+    has_long_context: null,
   };
 }
 
