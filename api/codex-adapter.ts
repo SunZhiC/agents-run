@@ -201,9 +201,10 @@ export class CodexAdapter implements ProviderAdapter {
         try {
           const msg = JSON.parse(line);
 
-          // Extract model from turn_context
+          // Extract model and reasoning_effort from turn_context
           if (!model && msg.type === "turn_context" && msg.payload?.model) {
-            model = msg.payload.model;
+            const effort = msg.payload?.collaboration_mode?.settings?.reasoning_effort;
+            model = effort ? `${msg.payload.model} (${effort})` : msg.payload.model;
           }
 
           if (msg.type !== "response_item") continue;
@@ -286,6 +287,8 @@ export class CodexAdapter implements ProviderAdapter {
     if (!filePath) return [];
 
     const messages: ConversationMessage[] = [];
+    const meta = this.sessionMetaCache.get(sessionId);
+    const model = meta?.model;
 
     try {
       const content = await readFile(filePath, "utf-8");
@@ -294,7 +297,7 @@ export class CodexAdapter implements ProviderAdapter {
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         try {
           const raw = JSON.parse(lines[lineIndex]);
-          const msg = this.convertLine(raw, sessionId, lineIndex);
+          const msg = this.convertLine(raw, sessionId, lineIndex, model);
           if (msg) messages.push(msg);
         } catch { /* skip */ }
       }
@@ -303,7 +306,7 @@ export class CodexAdapter implements ProviderAdapter {
     return messages;
   }
 
-  private convertLine(raw: any, sessionId: string, lineIndex: number): ConversationMessage | null {
+  private convertLine(raw: any, sessionId: string, lineIndex: number, model?: string): ConversationMessage | null {
     if (raw.type !== "response_item") return null;
     const payload = raw.payload;
     if (!payload) return null;
@@ -359,6 +362,7 @@ export class CodexAdapter implements ProviderAdapter {
         message: {
           role: "assistant",
           content: blocks,
+          model,
         },
       };
     }
@@ -423,6 +427,8 @@ export class CodexAdapter implements ProviderAdapter {
     const filePath = this.fileIndex.get(sessionId);
     if (!filePath) return { messages: [], nextOffset: 0 };
 
+    const meta = this.sessionMetaCache.get(sessionId);
+    const model = meta?.model;
     const messages: ConversationMessage[] = [];
 
     let fileHandle;
@@ -455,7 +461,7 @@ export class CodexAdapter implements ProviderAdapter {
           try {
             const raw = JSON.parse(line);
             // Use byte offset as part of uuid for stream uniqueness
-            const msg = this.convertLine(raw, sessionId, fromOffset + bytesConsumed);
+            const msg = this.convertLine(raw, sessionId, fromOffset + bytesConsumed, model);
             if (msg) messages.push(msg);
             bytesConsumed += lineBytes;
           } catch {
@@ -481,16 +487,49 @@ export class CodexAdapter implements ProviderAdapter {
   }
 
   async getSessionMeta(sessionId: string): Promise<SessionMeta> {
-    return {
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        cache_write_5m_tokens: 0,
-        cache_write_1h_tokens: 0,
-        cache_read_tokens: 0,
-      },
-      subagents: [],
+    const usage: SessionTokenUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_write_5m_tokens: 0,
+      cache_write_1h_tokens: 0,
+      cache_read_tokens: 0,
     };
+    let model: string | undefined;
+
+    const filePath = this.fileIndex.get(sessionId);
+    if (!filePath) return { usage, subagents: [] };
+
+    const meta = this.sessionMetaCache.get(sessionId);
+    if (meta?.model) model = meta.model;
+
+    try {
+      const content = await readFile(filePath, "utf-8");
+      const lines = content.trim().split("\n").filter(Boolean);
+
+      for (const line of lines) {
+        try {
+          const raw = JSON.parse(line);
+          // Extract model from turn_context
+          if (!model && raw.type === "turn_context" && raw.payload?.model) {
+            model = raw.payload.model;
+          }
+          // Extract token usage from token_count events (use total_token_usage)
+          if (raw.type === "event_msg" && raw.payload?.type === "token_count" && raw.payload.info?.total_token_usage) {
+            const tu = raw.payload.info.total_token_usage;
+            // Keep updating — the last token_count has the cumulative totals
+            // OpenAI's input_tokens includes cached_input_tokens as a subset,
+            // but Claude's model treats them as separate additive counters.
+            // Subtract cached from input to align with Claude's semantics.
+            const cached = tu.cached_input_tokens ?? 0;
+            usage.input_tokens = (tu.input_tokens ?? 0) - cached;
+            usage.output_tokens = (tu.output_tokens ?? 0) + (tu.reasoning_output_tokens ?? 0);
+            usage.cache_read_tokens = cached;
+          }
+        } catch { /* skip */ }
+      }
+    } catch { /* file not readable */ }
+
+    return { usage, subagents: [], model };
   }
 
   async searchConversations(query: string): Promise<SearchResult[]> {
