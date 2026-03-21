@@ -180,6 +180,10 @@ const TOOL_ICONS: Record<string, typeof Wrench> = {
   write: FilePlus2,
   glob: FolderOpen,
   task: Bot,
+  exec_command: Terminal,
+  read_file: FileCode,
+  replace: Pencil,
+  write_file: FilePlus2,
 };
 
 const TOOL_ICON_PATTERNS: Array<{ patterns: string[]; icon: typeof Wrench }> = [
@@ -227,6 +231,15 @@ const TOOL_PREVIEW_HANDLERS: Record<string, PreviewHandler> = {
   grep: (input) => input.pattern ? `"${String(input.pattern)}"` : null,
   glob: (input) => input.pattern ? String(input.pattern) : null,
   task: (input) => input.description ? String(input.description) : null,
+  exec_command: (input) => {
+    const cmd = input.cmd || input.command;
+    if (!cmd) return null;
+    const cmdStr = String(cmd);
+    return cmdStr.length > 50 ? cmdStr.slice(0, 50) + "..." : cmdStr;
+  },
+  read_file: (input) => input.file_path ? getFilePathPreview(String(input.file_path)) : null,
+  replace: (input) => input.file_path ? getFilePathPreview(String(input.file_path)) : null,
+  write_file: (input) => input.file_path ? getFilePathPreview(String(input.file_path)) : null,
 };
 
 function getToolPreview(toolName: string, input: Record<string, unknown> | undefined): string | null {

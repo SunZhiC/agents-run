@@ -1,7 +1,7 @@
 import { useState, useMemo, memo, useRef, useEffect, useCallback } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Session, SearchResult } from "@claude-run/api";
-import { formatTime, getProviderInfo } from "../utils";
+import { formatTime, getProviderInfo, getCliProviderInfo } from "../utils";
 
 interface SessionListProps {
   sessions: Session[];
@@ -9,6 +9,7 @@ interface SessionListProps {
   onSelectSession: (sessionId: string) => void;
   onDeleteSession?: (sessionId: string) => void;
   loading?: boolean;
+  selectedProvider?: string | null;
 }
 
 type SearchMode = "title" | "content";
@@ -19,7 +20,7 @@ interface SearchState {
 }
 
 const SessionList = memo(function SessionList(props: SessionListProps) {
-  const { sessions, selectedSession, onSelectSession, onDeleteSession, loading: sessionsLoading } = props;
+  const { sessions, selectedSession, onSelectSession, onDeleteSession, loading: sessionsLoading, selectedProvider } = props;
   const [search, setSearch] = useState("");
   const [searchMode, setSearchMode] = useState<SearchMode>("title");
   const [searchState, setSearchState] = useState<SearchState>({ results: [], loading: false });
@@ -52,7 +53,7 @@ const SessionList = memo(function SessionList(props: SessionListProps) {
       const response = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, provider: selectedProvider ?? undefined }),
       });
 
       if (!response.ok) {
@@ -65,7 +66,7 @@ const SessionList = memo(function SessionList(props: SessionListProps) {
       console.error("Search error:", err);
       setSearchState({ results: [], loading: false });
     }
-  }, []);
+  }, [selectedProvider]);
 
   // Debounced search effect
   useEffect(() => {
@@ -249,7 +250,6 @@ const SessionList = memo(function SessionList(props: SessionListProps) {
             {virtualizer.getVirtualItems().map((virtualItem) => {
               if (searchMode === "content") {
                 const result = searchState.results[virtualItem.index];
-                const firstMatch = result.matches[0];
                 return (
                   <div
                     key={result.sessionId}
@@ -274,15 +274,15 @@ const SessionList = memo(function SessionList(props: SessionListProps) {
                         {result.projectName}
                       </span>
                       <span className="text-[10px] text-zinc-600">
-                        {result.matches.length} match{result.matches.length !== 1 ? "es" : ""}
+                        {result.matchCount} match{result.matchCount !== 1 ? "es" : ""}
                       </span>
                     </div>
                     <p className="text-[12px] text-zinc-300 leading-snug line-clamp-1 break-words mb-1">
                       {result.display}
                     </p>
-                    {firstMatch && (
+                    {result.firstMatch && (
                       <p className="text-[11px] text-zinc-500 leading-snug line-clamp-2 break-words">
-                        {highlightMatch(firstMatch.snippet, search)}
+                        {highlightMatch(result.firstMatch.snippet, search)}
                       </p>
                     )}
                   </div>
@@ -313,18 +313,40 @@ const SessionList = memo(function SessionList(props: SessionListProps) {
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[10px] text-zinc-500 font-medium flex items-center gap-1.5">
                       {session.projectName}
-                      {provider && (
-                        <span className={`px-1 py-px rounded text-[9px] font-medium border ${provider.color}`}>
-                          {provider.label}
-                        </span>
-                      )}
+                      {(() => {
+                        const sessionProvider = (session as any).provider;
+                        const cli = sessionProvider && sessionProvider !== "claude"
+                          ? getCliProviderInfo(sessionProvider)
+                          : null;
+                        if (cli) {
+                          return (
+                            <span className={`px-1 py-px rounded text-[9px] font-medium border ${cli.color}`}>
+                              {cli.label}
+                            </span>
+                          );
+                        }
+                        if (provider) {
+                          return (
+                            <span className={`px-1 py-px rounded text-[9px] font-medium border ${provider.color}`}>
+                              {provider.label}
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
                     </span>
-                    {onDeleteSession ? (
+                    {onDeleteSession && (!(session as any).provider || (session as any).provider === "claude") ? (
                       <>
                         <span className="text-[10px] text-zinc-600 group-hover:invisible h-4 flex items-center gap-1">
                           <span>{formatTime(session.timestamp)}</span>
                           <span>·</span>
                           <span>{session.messageCount} msgs</span>
+                          {session.model && (
+                            <>
+                              <span>·</span>
+                              <span className="truncate max-w-[100px]">{session.model}</span>
+                            </>
+                          )}
                         </span>
                         <button
                           onClick={(e) => {

@@ -18,6 +18,8 @@ export interface Session {
   projectName: string;
   messageCount: number;
   model?: string;
+  provider: "claude" | "codex" | "gemini";
+  surface?: "cli" | "tui" | "app" | "exec";
 }
 
 export interface ConversationMessage {
@@ -87,7 +89,8 @@ export interface SearchResult {
   display: string;
   projectName: string;
   timestamp: number;
-  matches: SearchMatch[];
+  matchCount: number;
+  firstMatch: SearchMatch;
 }
 
 let claudeDir = join(homedir(), ".claude");
@@ -112,6 +115,10 @@ export function invalidateHistoryCache(): void {
 
 export function addToFileIndex(sessionId: string, filePath: string): void {
   fileIndex.set(sessionId, filePath);
+}
+
+export function hasSession(sessionId: string): boolean {
+  return fileIndex.has(sessionId);
 }
 
 export function invalidateSessionMeta(sessionId: string): void {
@@ -340,6 +347,7 @@ export async function getSessions(): Promise<Session[]> {
           projectName: getProjectName(entry.project),
           messageCount,
           model,
+          provider: "claude" as const,
         };
       })
     );
@@ -397,9 +405,12 @@ export async function getConversation(
   });
 }
 
-export async function getSessionTokenUsage(
-  sessionId: string
-): Promise<SessionTokenUsage> {
+export interface SessionMeta {
+  usage: SessionTokenUsage;
+  subagents: SubagentInfo[];
+}
+
+export async function getSessionMeta(sessionId: string): Promise<SessionMeta> {
   const usage: SessionTokenUsage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -407,30 +418,50 @@ export async function getSessionTokenUsage(
     cache_write_1h_tokens: 0,
     cache_read_tokens: 0,
   };
+  const subagents: SubagentInfo[] = [];
 
   const filePath = await findSessionFile(sessionId);
-  if (!filePath) return usage;
+  if (!filePath) return { usage, subagents };
 
   try {
     const content = await readFile(filePath, "utf-8");
     const lines = content.trim().split("\n").filter(Boolean);
+    const seenAgents = new Set<string>();
 
     for (const line of lines) {
       try {
         const msg = JSON.parse(line);
-        const u = msg?.message?.usage;
-        if (msg.type !== "assistant" || !u) continue;
 
-        usage.input_tokens += u.input_tokens ?? 0;
-        usage.output_tokens += u.output_tokens ?? 0;
-        usage.cache_read_tokens += u.cache_read_input_tokens ?? 0;
+        // Accumulate token usage from assistant messages
+        if (msg.type === "assistant") {
+          const u = msg?.message?.usage;
+          if (u) {
+            usage.input_tokens += u.input_tokens ?? 0;
+            usage.output_tokens += u.output_tokens ?? 0;
+            usage.cache_read_tokens += u.cache_read_input_tokens ?? 0;
 
-        if (u.cache_creation) {
-          usage.cache_write_5m_tokens += u.cache_creation.ephemeral_5m_input_tokens ?? 0;
-          usage.cache_write_1h_tokens += u.cache_creation.ephemeral_1h_input_tokens ?? 0;
-        } else if (u.cache_creation_input_tokens) {
-          // Fallback: older format without cache_creation breakdown
-          usage.cache_write_1h_tokens += u.cache_creation_input_tokens;
+            if (u.cache_creation) {
+              usage.cache_write_5m_tokens += u.cache_creation.ephemeral_5m_input_tokens ?? 0;
+              usage.cache_write_1h_tokens += u.cache_creation.ephemeral_1h_input_tokens ?? 0;
+            } else if (u.cache_creation_input_tokens) {
+              usage.cache_write_1h_tokens += u.cache_creation_input_tokens;
+            }
+          }
+        }
+
+        // Collect subagent info from progress messages
+        if (
+          msg.type === "progress" &&
+          msg.data?.type === "agent_progress" &&
+          msg.data.agentId &&
+          msg.parentToolUseID &&
+          !seenAgents.has(msg.data.agentId)
+        ) {
+          seenAgents.add(msg.data.agentId);
+          subagents.push({
+            agentId: msg.data.agentId,
+            toolUseId: msg.parentToolUseID,
+          });
         }
       } catch {
         // skip
@@ -440,6 +471,13 @@ export async function getSessionTokenUsage(
     // file not readable
   }
 
+  return { usage, subagents };
+}
+
+export async function getSessionTokenUsage(
+  sessionId: string
+): Promise<SessionTokenUsage> {
+  const { usage } = await getSessionMeta(sessionId);
   return usage;
 }
 
@@ -683,14 +721,10 @@ function extractTextFromContent(content: string | ContentBlock[] | undefined): s
     if (block.text) {
       texts.push(block.text);
     }
-    if (block.thinking) {
-      texts.push(block.thinking);
-    }
+    // Skip thinking blocks and tool input — they add noise to search results.
+    // Tool result content (text from tool outputs) is still included.
     if (block.content) {
       texts.push(extractTextFromContent(block.content));
-    }
-    if (block.input && typeof block.input === "object") {
-      texts.push(JSON.stringify(block.input));
     }
   }
   return texts.join(" ");
@@ -725,78 +759,94 @@ function createSnippet(text: string, query: string, contextLength: number = 60):
   return snippet;
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function searchSessionFile(
   filePath: string,
-  sessionId: string,
-  query: string
-): Promise<SearchMatch[]> {
-  const matches: SearchMatch[] = [];
-
+  session: Session,
+  trimmedQuery: string,
+  lowerQuery: string,
+  queryRegex: RegExp,
+): Promise<SearchResult | null> {
   try {
     const content = await readFile(filePath, "utf-8");
-    const lines = content.trim().split("\n").filter(Boolean);
 
+    // Pre-filter: case-insensitive regex test on raw file content.
+    // Skips the expensive JSON parse pipeline for non-matching files.
+    if (!queryRegex.test(content)) return null;
+
+    const lines = content.trim().split("\n").filter(Boolean);
+    let matchCount = 0;
+    let firstMatch: SearchMatch | null = null;
     let messageIndex = 0;
+
     for (const line of lines) {
       try {
         const msg: ConversationMessage = JSON.parse(line);
-        if (msg.type !== "user" && msg.type !== "assistant") {
-          continue;
-        }
+        if (msg.type !== "user" && msg.type !== "assistant") continue;
 
         const text = extractMessageText(msg);
-        if (text.toLowerCase().includes(query.toLowerCase())) {
-          matches.push({
-            messageIndex,
-            text: text.slice(0, 200),
-            snippet: createSnippet(text, query),
-          });
+        if (text.toLowerCase().includes(lowerQuery)) {
+          matchCount++;
+          if (!firstMatch) {
+            firstMatch = {
+              messageIndex,
+              text: text.slice(0, 200),
+              snippet: createSnippet(text, trimmedQuery),
+            };
+          }
         }
         messageIndex++;
       } catch {
         // Skip malformed lines
       }
     }
-  } catch (err) {
-    console.error(`Error searching session ${sessionId}:`, err);
+
+    if (matchCount > 0 && firstMatch) {
+      return {
+        sessionId: session.id,
+        display: session.display,
+        projectName: session.projectName,
+        timestamp: session.timestamp,
+        matchCount,
+        firstMatch,
+      };
+    }
+  } catch {
+    // file not readable
   }
 
-  return matches;
+  return null;
 }
 
 export async function searchConversations(query: string): Promise<SearchResult[]> {
-  if (!query.trim()) {
-    return [];
-  }
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) return [];
 
-  const sessions = await getSessions();
-  const results: SearchResult[] = [];
+  return dedupe(`search:${trimmedQuery.toLowerCase()}`, async () => {
+    const sessions = await getSessions();
+    const lowerQuery = trimmedQuery.toLowerCase();
+    const queryRegex = new RegExp(escapeRegExp(trimmedQuery), "i");
+    const results: SearchResult[] = [];
 
-  // Search all session files in parallel
-  const searchPromises = sessions.map(async (session) => {
-    const filePath = await findSessionFile(session.id);
-    if (!filePath) return null;
-
-    const matches = await searchSessionFile(filePath, session.id, query.trim());
-    if (matches.length === 0) return null;
-
-    return {
-      sessionId: session.id,
-      display: session.display,
-      projectName: session.projectName,
-      timestamp: session.timestamp,
-      matches,
-    };
-  });
-
-  const searchResults = await Promise.all(searchPromises);
-
-  for (const result of searchResults) {
-    if (result) {
-      results.push(result);
+    // Process in batches to bound concurrent file reads and memory pressure.
+    const BATCH_SIZE = 50;
+    for (let i = 0; i < sessions.length; i += BATCH_SIZE) {
+      const batch = sessions.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map(async (session) => {
+          const filePath = await findSessionFile(session.id);
+          if (!filePath) return null;
+          return searchSessionFile(filePath, session, trimmedQuery, lowerQuery, queryRegex);
+        }),
+      );
+      for (const r of batchResults) {
+        if (r) results.push(r);
+      }
     }
-  }
 
-  // Sort by timestamp (newest first)
-  return results.sort((a, b) => b.timestamp - a.timestamp);
+    return results.sort((a, b) => b.timestamp - a.timestamp);
+  });
 }

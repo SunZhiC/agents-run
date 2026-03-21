@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import type { ConversationMessage, Session, SubagentInfo, SessionTokenUsage } from "@claude-run/api";
+import type { ConversationMessage, Session, SubagentInfo, SessionTokenUsage, SessionMeta } from "@claude-run/api";
 import MessageBlock from "./message-block";
 import ScrollToBottomButton from "./scroll-to-bottom-button";
 import { MarkdownExportButton } from "./markdown-export";
@@ -52,6 +52,39 @@ function TokenUsageBar({ usage }: { usage: SessionTokenUsage }) {
   );
 }
 
+function GeminiTokenUsageBar({ usage }: { usage: SessionTokenUsage }) {
+  const items = [
+    { label: "Input", count: usage.input_tokens },
+    { label: "Output", count: usage.output_tokens },
+    { label: "Cache Read", count: usage.cache_read_tokens },
+  ].filter(item => item.count > 0);
+
+  if (items.length === 0) return null;
+
+  const total = items.reduce((sum, i) => sum + i.count, 0);
+
+  return (
+    <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/50 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Token Usage</h3>
+        <span className="text-sm font-medium text-zinc-300">{formatTokenCount(total)} total</span>
+      </div>
+      <div className="flex justify-center gap-8">
+        {items.map(({ label, count }) => (
+          <div key={label} className="text-center">
+            <div className="text-[11px] text-zinc-500 mb-1">{label}</div>
+            <div className="text-sm text-zinc-200 font-mono">{formatTokenCount(count)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function hasNonZeroUsage(usage: SessionTokenUsage): boolean {
+  return usage.input_tokens > 0 || usage.output_tokens > 0 || usage.cache_read_tokens > 0;
+}
+
 const MAX_RETRIES = 10;
 const BASE_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30000;
@@ -95,7 +128,9 @@ function SessionView(props: SessionViewProps) {
 
     eventSource.addEventListener("messages", (event) => {
       retryCountRef.current = 0;
-      const newMessages: ConversationMessage[] = JSON.parse(event.data);
+      const payload = JSON.parse(event.data);
+      const newMessages: ConversationMessage[] = payload.messages;
+      const nextOffset: number = payload.nextOffset;
       setLoading(false);
       setMessages((prev) => {
         const existingIds = new Set(prev.map((m) => m.uuid).filter(Boolean));
@@ -103,7 +138,7 @@ function SessionView(props: SessionViewProps) {
         if (unique.length === 0) {
           return prev;
         }
-        offsetRef.current += unique.length;
+        offsetRef.current = nextOffset;
         return [...prev, ...unique];
       });
     });
@@ -133,23 +168,16 @@ function SessionView(props: SessionViewProps) {
     offsetRef.current = 0;
     retryCountRef.current = 0;
 
-    fetch(`/api/conversation/${sessionId}/usage`)
+    fetch(`/api/conversation/${sessionId}/meta`)
       .then((r) => r.json())
-      .then((data: SessionTokenUsage) => {
-        if (mountedRef.current) setTokenUsage(data);
-      })
-      .catch(() => {});
-
-    fetch(`/api/conversation/${sessionId}/subagents`)
-      .then((r) => r.json())
-      .then((infos: SubagentInfo[]) => {
-        if (mountedRef.current) {
-          const map = new Map<string, string>();
-          for (const info of infos) {
-            map.set(info.toolUseId, info.agentId);
-          }
-          setSubagentMap(map);
+      .then((data: SessionMeta) => {
+        if (!mountedRef.current) return;
+        setTokenUsage(data.usage);
+        const map = new Map<string, string>();
+        for (const info of data.subagents) {
+          map.set(info.toolUseId, info.agentId);
         }
+        setSubagentMap(map);
       })
       .catch(() => {});
 
@@ -231,9 +259,14 @@ function SessionView(props: SessionViewProps) {
               <MarkdownExportButton session={session} messages={messages} />
             </div>
           </div>
-          {tokenUsage && (
+          {tokenUsage && (!session.provider || session.provider === "claude") && (
             <div className="mb-6">
               <TokenUsageBar usage={tokenUsage} />
+            </div>
+          )}
+          {tokenUsage && session.provider === "gemini" && hasNonZeroUsage(tokenUsage) && (
+            <div className="mb-6">
+              <GeminiTokenUsageBar usage={tokenUsage} />
             </div>
           )}
 

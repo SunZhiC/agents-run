@@ -2,6 +2,14 @@ import { useState, useCallback } from "react";
 import type { Session } from "@claude-run/api";
 import { Copy, Check, X, FileText } from "lucide-react";
 
+function getAssistantLabel(provider?: string): string {
+  switch (provider) {
+    case "codex": return "🤖 Codex";
+    case "gemini": return "🤖 Gemini";
+    default: return "🤖 Claude";
+  }
+}
+
 interface MarkdownExportProps {
   session: Session;
   messages: Array<{
@@ -36,7 +44,7 @@ export function MarkdownExportButton({ session, messages }: MarkdownExportProps)
 
     for (const msg of conversationMessages) {
       const isUser = msg.type === "user";
-      const role = isUser ? "👤 User" : "🤖 Claude";
+      const role = isUser ? "👤 User" : getAssistantLabel((session as any).provider);
 
       let content = "";
       if (typeof msg.message?.content === "string") {

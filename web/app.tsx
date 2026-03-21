@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import type { Session } from "@claude-run/api";
 import { PanelLeft, Copy, Check, Pencil, X, Loader2 } from "lucide-react";
-import { formatTime } from "./utils";
+import { formatTime, getCliProviderInfo } from "./utils";
 import SessionList from "./components/session-list";
 import SessionView from "./components/session-view";
 import { useEventSource } from "./hooks/use-event-source";
@@ -10,7 +10,7 @@ import { useEventSource } from "./hooks/use-event-source";
 interface SessionHeaderProps {
   session: Session;
   copied: boolean;
-  onCopyResumeCommand: (sessionId: string, projectPath: string) => void;
+  onCopyResumeCommand: (sessionId: string, projectPath: string, provider?: string) => void;
   onRenameSession?: (sessionId: string, newName: string) => Promise<boolean>;
 }
 
@@ -120,16 +120,22 @@ function SessionHeader(props: SessionHeaderProps) {
           </div>
         ) : (
           <>
-            <button
-              onClick={handleStartEdit}
-              className="group flex items-center gap-2 min-w-0"
-              title="Click to rename"
-            >
-              <span className="text-sm text-zinc-300 truncate max-w-xs group-hover:text-zinc-200">
+            {(!(session as any).provider || (session as any).provider === "claude") ? (
+              <button
+                onClick={handleStartEdit}
+                className="group flex items-center gap-2 min-w-0"
+                title="Click to rename"
+              >
+                <span className="text-sm text-zinc-300 truncate max-w-xs group-hover:text-zinc-200">
+                  {session.display}
+                </span>
+                <Pencil className="w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity" />
+              </button>
+            ) : (
+              <span className="text-sm text-zinc-300 truncate max-w-xs">
                 {session.display}
               </span>
-              <Pencil className="w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity" />
-            </button>
+            )}
             <span className="text-xs text-zinc-600 shrink-0">
               {session.projectName}
             </span>
@@ -140,23 +146,25 @@ function SessionHeader(props: SessionHeaderProps) {
         )}
       </div>
       <div className="flex items-center gap-2">
-        <button
-          onClick={() => onCopyResumeCommand(session.id, session.project)}
-          className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 rounded transition-colors cursor-pointer shrink-0"
-          title="Copy resume command to clipboard"
-        >
-          {copied ? (
-            <>
-              <Check className="w-3.5 h-3.5 text-green-500" />
-              <span className="text-green-500">Copied!</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-3.5 h-3.5" />
-              <span>Copy Resume Command</span>
-            </>
-          )}
-        </button>
+        {(session as any).provider !== "gemini" && (
+          <button
+            onClick={() => onCopyResumeCommand(session.id, session.project, (session as any).provider)}
+            className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 rounded transition-colors cursor-pointer shrink-0"
+            title="Copy resume command to clipboard"
+          >
+            {copied ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-green-500" />
+                <span className="text-green-500">Copied!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copy Resume Command</span>
+              </>
+            )}
+          </button>
+        )}
       </div>
     </>
   );
@@ -170,10 +178,28 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  const [providers, setProviders] = useState<{ name: string; sessionCount: number }[]>([]);
+
+  useEffect(() => {
+    fetch("/api/providers")
+      .then((res) => res.json())
+      .then(setProviders)
+      .catch(console.error);
+  }, []);
 
   const handleCopyResumeCommand = useCallback(
-    (sessionId: string, projectPath: string) => {
-      const command = `cd ${projectPath} && claude --resume ${sessionId}`;
+    (sessionId: string, projectPath: string, provider?: string) => {
+      let command: string;
+      switch (provider) {
+        case "codex":
+          command = `cd ${projectPath} && codex resume ${sessionId}`;
+          break;
+        case "gemini":
+          return; // Gemini doesn't support resume
+        default:
+          command = `cd ${projectPath} && claude --resume ${sessionId}`;
+      }
       navigator.clipboard.writeText(command).then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
@@ -243,6 +269,15 @@ function App() {
     });
   }, []);
 
+  const handleSessionsRemove = useCallback((event: MessageEvent) => {
+    const removedIds: string[] = JSON.parse(event.data);
+    const removedSet = new Set(removedIds);
+    setSessions((prev) => prev.filter((session) => !removedSet.has(session.id)));
+    if (selectedSession && removedSet.has(selectedSession)) {
+      setSelectedSession(null);
+    }
+  }, [selectedSession]);
+
   const handleSessionsError = useCallback(() => {
     setLoading(false);
   }, []);
@@ -251,16 +286,21 @@ function App() {
     events: [
       { eventName: "sessions", onMessage: handleSessionsFull },
       { eventName: "sessionsUpdate", onMessage: handleSessionsUpdate },
+      { eventName: "sessionsRemove", onMessage: handleSessionsRemove },
     ],
     onError: handleSessionsError,
   });
 
   const filteredSessions = useMemo(() => {
-    if (!selectedProject) {
-      return sessions;
+    let result = sessions;
+    if (selectedProject) {
+      result = result.filter((s) => s.project === selectedProject);
     }
-    return sessions.filter((s) => s.project === selectedProject);
-  }, [sessions, selectedProject]);
+    if (selectedProvider) {
+      result = result.filter((s) => (s as any).provider === selectedProvider);
+    }
+    return result;
+  }, [sessions, selectedProject, selectedProvider]);
 
   const handleSelectSession = useCallback((sessionId: string) => {
     setSelectedSession(sessionId);
@@ -308,6 +348,23 @@ function App() {
                 })}
               </select>
             </label>
+            {providers.length > 1 && (
+              <label htmlFor="select-provider" className="block w-full px-1">
+                <select
+                  id="select-provider"
+                  value={selectedProvider || ""}
+                  onChange={(e) => setSelectedProvider(e.target.value || null)}
+                  className="w-full h-[36px] bg-transparent text-zinc-300 text-sm focus:outline-none cursor-pointer px-5 py-2"
+                >
+                  <option value="">All Providers</option>
+                  {providers.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {getCliProviderInfo(p.name)?.label ?? p.name} ({p.sessionCount})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
           <SessionList
             sessions={filteredSessions}
@@ -315,6 +372,7 @@ function App() {
             onSelectSession={handleSelectSession}
             onDeleteSession={handleDeleteSession}
             loading={loading}
+            selectedProvider={selectedProvider}
           />
         </aside>
       )}

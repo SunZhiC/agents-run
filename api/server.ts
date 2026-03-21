@@ -5,27 +5,21 @@ import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
 import type { ServerType } from "@hono/node-server";
 import {
-  initStorage,
-  loadStorage,
   getClaudeDir,
-  getSessions,
-  getProjects,
-  getConversation,
-  getConversationStream,
   getSubagentMap,
   getSubagentConversation,
-  getSessionTokenUsage,
   deleteSession,
   renameSession,
-  searchConversations,
-  invalidateHistoryCache,
-  invalidateSessionMeta,
-  addToFileIndex,
 } from "./storage";
+import type { ProviderName } from "./provider-types";
+import { providerManager } from "./providers";
 import {
   initWatcher,
   startWatcher,
   stopWatcher,
+  addWatchTarget,
+  emitHistoryChange,
+  emitSessionChange,
   onHistoryChange,
   offHistoryChange,
   onSessionChange,
@@ -35,6 +29,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { readFileSync, existsSync } from "fs";
 import open from "open";
+import type { Session } from "./storage";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -58,9 +53,6 @@ export interface ServerOptions {
 export function createServer(options: ServerOptions) {
   const { port, claudeDir, dev = false, open: shouldOpen = true } = options;
 
-  initStorage(claudeDir);
-  initWatcher(getClaudeDir());
-
   const app = new Hono();
 
   if (dev) {
@@ -74,13 +66,32 @@ export function createServer(options: ServerOptions) {
     );
   }
 
+  // === API Routes ===
+
+  app.get("/api/providers", async (c) => {
+    const providers = providerManager.getAvailableProviders();
+    const sessions = await providerManager.getSessions();
+
+    const result = providers.map((name) => ({
+      name,
+      sessionCount: sessions.filter((s) => s.provider === name).length,
+    }));
+
+    return c.json(result);
+  });
+
   app.get("/api/sessions", async (c) => {
-    const sessions = await getSessions();
+    const provider = c.req.query("provider") as ProviderName | undefined;
+    const sessions = await providerManager.getSessions(provider);
     return c.json(sessions);
   });
 
   app.delete("/api/sessions/:id", async (c) => {
     const sessionId = c.req.param("id");
+    const sessionProvider = providerManager.getProviderForSession(sessionId);
+    if (sessionProvider && sessionProvider !== "claude") {
+      return c.json({ error: "Delete not supported for this provider" }, 400);
+    }
     const deleted = await deleteSession(sessionId);
     if (deleted) {
       return c.json({ success: true });
@@ -90,6 +101,10 @@ export function createServer(options: ServerOptions) {
 
   app.post("/api/sessions/:id/rename", async (c) => {
     const sessionId = c.req.param("id");
+    const sessionProvider = providerManager.getProviderForSession(sessionId);
+    if (sessionProvider && sessionProvider !== "claude") {
+      return c.json({ error: "Rename not supported for this provider" }, 400);
+    }
     try {
       const body = await c.req.json<{ name: string }>();
       const name = body?.name?.trim() ?? "";
@@ -112,33 +127,54 @@ export function createServer(options: ServerOptions) {
   });
 
   app.get("/api/projects", async (c) => {
-    const projects = await getProjects();
+    const projects = await providerManager.getProjects();
     return c.json(projects);
   });
 
   app.get("/api/sessions/stream", async (c) => {
+    const provider = c.req.query("provider") as ProviderName | undefined;
+
     return streamSSE(c, async (stream) => {
       let isConnected = true;
-      const knownSessions = new Map<string, number>();
+      const knownSessions = new Map<string, string>();
+
+      const sessionSignature = (session: Session): string =>
+        JSON.stringify({
+          display: session.display,
+          timestamp: session.timestamp,
+          project: session.project,
+          projectName: session.projectName,
+          messageCount: session.messageCount,
+          model: session.model ?? null,
+          provider: session.provider,
+          surface: session.surface ?? null,
+        });
 
       const cleanup = () => {
         isConnected = false;
         offHistoryChange(handleHistoryChange);
+        offSessionChange(handleSessionListChange);
       };
 
-      const handleHistoryChange = async () => {
+      const syncSessions = async () => {
         if (!isConnected) {
           return;
         }
         try {
-          const sessions = await getSessions();
+          const sessions = await providerManager.getSessions(provider);
+          const nextKnownSessions = new Map<string, string>();
           const newOrUpdated = sessions.filter((s) => {
-            const known = knownSessions.get(s.id);
-            return known === undefined || known !== s.timestamp;
+            const signature = sessionSignature(s);
+            nextKnownSessions.set(s.id, signature);
+            return knownSessions.get(s.id) !== signature;
           });
+          const removedSessionIds = [...knownSessions.keys()].filter(
+            (sessionId) => !nextKnownSessions.has(sessionId),
+          );
 
-          for (const s of sessions) {
-            knownSessions.set(s.id, s.timestamp);
+          knownSessions.clear();
+          for (const [sessionId, signature] of nextKnownSessions) {
+            knownSessions.set(sessionId, signature);
           }
 
           if (newOrUpdated.length > 0) {
@@ -147,18 +183,33 @@ export function createServer(options: ServerOptions) {
               data: JSON.stringify(newOrUpdated),
             });
           }
+          if (removedSessionIds.length > 0) {
+            await stream.writeSSE({
+              event: "sessionsRemove",
+              data: JSON.stringify(removedSessionIds),
+            });
+          }
         } catch {
           cleanup();
         }
       };
 
+      const handleHistoryChange = async () => {
+        await syncSessions();
+      };
+
+      const handleSessionListChange = async () => {
+        await syncSessions();
+      };
+
       onHistoryChange(handleHistoryChange);
+      onSessionChange(handleSessionListChange);
       c.req.raw.signal.addEventListener("abort", cleanup);
 
       try {
-        const sessions = await getSessions();
+        const sessions = await providerManager.getSessions(provider);
         for (const s of sessions) {
-          knownSessions.set(s.id, s.timestamp);
+          knownSessions.set(s.id, sessionSignature(s));
         }
 
         await stream.writeSSE({
@@ -183,27 +234,41 @@ export function createServer(options: ServerOptions) {
 
   app.get("/api/conversation/:id", async (c) => {
     const sessionId = c.req.param("id");
-    const messages = await getConversation(sessionId);
+    const messages = await providerManager.getConversation(sessionId);
     return c.json(messages);
   });
 
   app.get("/api/conversation/:id/subagents", async (c) => {
     const sessionId = c.req.param("id");
+    const sessionProvider = providerManager.getProviderForSession(sessionId);
+    if (sessionProvider && sessionProvider !== "claude") {
+      return c.json([]);
+    }
     const infos = await getSubagentMap(sessionId);
     return c.json(infos);
   });
 
   app.get("/api/conversation/:id/subagent/:agentId", async (c) => {
     const sessionId = c.req.param("id");
+    const sessionProvider = providerManager.getProviderForSession(sessionId);
+    if (sessionProvider && sessionProvider !== "claude") {
+      return c.json([]);
+    }
     const agentId = c.req.param("agentId");
     const messages = await getSubagentConversation(sessionId, agentId);
     return c.json(messages);
   });
 
+  app.get("/api/conversation/:id/meta", async (c) => {
+    const sessionId = c.req.param("id");
+    const meta = await providerManager.getSessionMeta(sessionId);
+    return c.json(meta);
+  });
+
   app.get("/api/conversation/:id/usage", async (c) => {
     const sessionId = c.req.param("id");
-    const usage = await getSessionTokenUsage(sessionId);
-    return c.json(usage);
+    const meta = await providerManager.getSessionMeta(sessionId);
+    return c.json(meta.usage);
   });
 
   app.get("/api/conversation/:id/stream", async (c) => {
@@ -225,14 +290,14 @@ export function createServer(options: ServerOptions) {
         }
 
         const { messages: newMessages, nextOffset: newOffset } =
-          await getConversationStream(sessionId, offset);
+          await providerManager.getConversationStream(sessionId, offset);
         offset = newOffset;
 
         if (newMessages.length > 0) {
           try {
             await stream.writeSSE({
               event: "messages",
-              data: JSON.stringify(newMessages),
+              data: JSON.stringify({ messages: newMessages, nextOffset: newOffset }),
             });
           } catch {
             cleanup();
@@ -244,7 +309,7 @@ export function createServer(options: ServerOptions) {
       c.req.raw.signal.addEventListener("abort", cleanup);
 
       try {
-        const { messages, nextOffset } = await getConversationStream(
+        const { messages, nextOffset } = await providerManager.getConversationStream(
           sessionId,
           offset,
         );
@@ -252,7 +317,7 @@ export function createServer(options: ServerOptions) {
 
         await stream.writeSSE({
           event: "messages",
-          data: JSON.stringify(messages),
+          data: JSON.stringify({ messages, nextOffset }),
         });
 
         while (isConnected) {
@@ -271,16 +336,18 @@ export function createServer(options: ServerOptions) {
   });
 
   app.post("/api/search", async (c) => {
-    const body = await c.req.json<{ query: string }>();
+    const body = await c.req.json<{ query: string; provider?: ProviderName }>();
     const query = body?.query?.trim() ?? "";
 
     if (!query) {
       return c.json({ results: [] });
     }
 
-    const results = await searchConversations(query);
+    const results = await providerManager.searchConversations(query, body?.provider);
     return c.json({ results });
   });
+
+  // === Static files ===
 
   const webDistPath = getWebDistPath();
 
@@ -296,24 +363,50 @@ export function createServer(options: ServerOptions) {
     }
   });
 
-  onHistoryChange(() => {
-    invalidateHistoryCache();
-  });
-
-  onSessionChange((sessionId: string, filePath: string) => {
-    addToFileIndex(sessionId, filePath);
-    invalidateSessionMeta(sessionId);
-  });
-
-  startWatcher();
-
   let httpServer: ServerType | null = null;
 
   return {
     app,
     port,
     start: async () => {
-      await loadStorage();
+      // 1. Initialize all providers (includes Claude storage)
+      await providerManager.init(claudeDir);
+
+      // 2. Setup Claude watcher (existing logic)
+      initWatcher(getClaudeDir());
+      startWatcher();
+
+      const claudeAdapter = providerManager.getAdapters().find((a) => a.name === "claude")!;
+
+      onHistoryChange(() => {
+        claudeAdapter.invalidateHistoryCache();
+      });
+
+      onSessionChange((sessionId: string, filePath: string) => {
+        claudeAdapter.addToFileIndex(sessionId, filePath);
+        claudeAdapter.invalidateSessionMeta(sessionId);
+      });
+
+      // 3. Setup watchers for non-Claude providers
+      for (const adapter of providerManager.getAdapters()) {
+        if (adapter.name === "claude") continue;
+
+        const { paths, depth } = adapter.getWatchPaths();
+        addWatchTarget(paths, depth, (filePath) => {
+          const sessionId = adapter.resolveSessionId(filePath);
+
+          if (sessionId) {
+            adapter.addToFileIndex(sessionId, filePath);
+            adapter.invalidateSessionMeta(sessionId);
+            emitSessionChange(sessionId, filePath);
+          } else {
+            adapter.invalidateHistoryCache();
+            emitHistoryChange();
+          }
+        });
+      }
+
+      // 4. Start HTTP server
       const openUrl = `http://localhost:${dev ? 12000 : port}/`;
 
       console.log(`\n  claude-run is running at ${openUrl}\n`);
