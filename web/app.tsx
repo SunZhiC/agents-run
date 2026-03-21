@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import type { Session } from "@claude-run/api";
+import type { Session } from "@agents-run/api";
 import { PanelLeft, Copy, Check, Pencil, X, Loader2 } from "lucide-react";
 import { formatTime, getCliProviderInfo } from "./utils";
 import SessionList from "./components/session-list";
@@ -146,25 +146,23 @@ function SessionHeader(props: SessionHeaderProps) {
         )}
       </div>
       <div className="flex items-center gap-2">
-        {(session as any).provider !== "gemini" && (
-          <button
-            onClick={() => onCopyResumeCommand(session.id, session.project, (session as any).provider)}
-            className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 rounded transition-colors cursor-pointer shrink-0"
-            title="Copy resume command to clipboard"
-          >
-            {copied ? (
-              <>
-                <Check className="w-3.5 h-3.5 text-green-500" />
-                <span className="text-green-500">Copied!</span>
-              </>
-            ) : (
-              <>
-                <Copy className="w-3.5 h-3.5" />
-                <span>Copy Resume Command</span>
-              </>
-            )}
-          </button>
-        )}
+        <button
+          onClick={() => onCopyResumeCommand(session.id, session.project, (session as any).provider)}
+          className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 rounded transition-colors cursor-pointer shrink-0"
+          title="Copy resume command to clipboard"
+        >
+          {copied ? (
+            <>
+              <Check className="w-3.5 h-3.5 text-green-500" />
+              <span className="text-green-500">Copied!</span>
+            </>
+          ) : (
+            <>
+              <Copy className="w-3.5 h-3.5" />
+              <span>Copy Resume Command</span>
+            </>
+          )}
+        </button>
       </div>
     </>
   );
@@ -196,7 +194,8 @@ function App() {
           command = `cd ${projectPath} && codex resume ${sessionId}`;
           break;
         case "gemini":
-          return; // Gemini doesn't support resume
+          command = `cd ${projectPath} && gemini resume ${sessionId}`;
+          break;
         default:
           command = `cd ${projectPath} && claude --resume ${sessionId}`;
       }

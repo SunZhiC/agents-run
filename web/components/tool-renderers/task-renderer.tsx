@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import type { ConversationMessage } from "@claude-run/api";
+import type { ConversationMessage } from "@agents-run/api";
 import { Bot, Play, Pause, ArrowRight, RefreshCw, ChevronDown, ChevronRight, MessageSquareText } from "lucide-react";
 import MessageBlock from "../message-block";
 

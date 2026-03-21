@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Claude Run is a web UI for browsing AI coding tool conversation history. It reads from `~/.claude/`, `~/.codex/`, and `~/.gemini/` to present conversations from Claude Code, Codex CLI/Desktop, and Gemini CLI in a unified real-time streaming interface.
+Agents Run is a web UI for browsing AI coding tool conversation history. It reads from `~/.claude/`, `~/.codex/`, and `~/.gemini/` to present conversations from Claude Code, Codex CLI/Desktop, and Gemini CLI in a unified real-time streaming interface.
 
 ## Tech Stack
 
@@ -38,6 +38,7 @@ The backend uses a provider adapter pattern to support multiple AI tool data sou
 - **`api/storage.ts`** — Claude Code adapter (also defines shared types: `Session`, `ConversationMessage`, `ContentBlock`, `StreamResult`, `SessionMeta`, `SearchResult`)
 - **`api/codex-adapter.ts`** — Codex CLI/Desktop adapter (reads `~/.codex/sessions/` JSONL files)
 - **`api/gemini-adapter.ts`** — Gemini CLI adapter (reads `~/.gemini/tmp/*/chats/session-*.json` JSON files)
+- **`api/pricing.ts`** — Token pricing data for all providers (Claude, OpenAI/Codex, Gemini). `findPricing(modelId)` for lookup, `ModelPricing` interface for per-model prices (input, output, cacheWrite5m, cacheWrite1h, cacheRead, longContext).
 
 Each adapter implements: `init()`, `getSessions()`, `getConversation()`, `getConversationStream()`, `getSessionMeta()`, `searchConversations()`, `ownsSession()`, `resolveSessionId()`, and cache invalidation methods.
 
@@ -51,9 +52,9 @@ Each adapter implements: `init()`, `getSessions()`, `getConversation()`, `getCon
 | **File format** | JSONL | JSONL | JSON (not JSONL) |
 | **Session index** | `history.jsonl` | `session_index.jsonl` | None (scan `tmp/*/chats/`) |
 | **Stream offset** | byte offset | byte offset | message index |
-| **Token data** | per-message usage | none | per-message tokens |
+| **Token data** | per-message usage | `token_count` events (cumulative) | per-message tokens |
 | **Rename/Delete** | supported | not supported (returns 400) | not supported (returns 400) |
-| **Resume** | `claude --resume` | `codex resume` | not supported (button hidden) |
+| **Resume** | `claude --resume` | `codex resume` | `gemini resume` |
 
 ### Server Layer (`api/server.ts`)
 
@@ -71,7 +72,7 @@ Key endpoints:
 - `GET /api/sessions?provider=` — all sessions, optional provider filter
 - `GET /api/sessions/stream?provider=` — SSE with `sessions`, `sessionsUpdate`, `sessionsRemove` events
 - `GET /api/conversation/:id/stream?offset=` — SSE with `{messages, nextOffset}` payload
-- `GET /api/conversation/:id/meta` — combined token usage + subagent info
+- `GET /api/conversation/:id/meta` — combined token usage, model ID, and subagent info
 - `POST /api/search` — body: `{query, provider?}`
 - `DELETE /api/sessions/:id` — Claude only (400 for others)
 - `POST /api/sessions/:id/rename` — Claude only (400 for others)
@@ -87,14 +88,14 @@ Key endpoints:
 
 - **`web/app.tsx`** — Main layout, provider filter dropdown (shown when >1 provider), session header with provider-aware rename/resume
 - **`web/components/session-list.tsx`** — Virtualized list with title/content search, CLI provider badges for non-Claude sessions, delete button Claude-only
-- **`web/components/session-view.tsx`** — Conversation viewer with SSE streaming, `TokenUsageBar` (Claude with costs), `GeminiTokenUsageBar` (counts only), hidden for Codex
+- **`web/components/session-view.tsx`** — Conversation viewer with SSE streaming, `TokenUsageBar` (Claude, model-aware pricing), `GenericTokenUsageBar` (Gemini/Codex, with costs when pricing available). Uses `findPricing()` from `api/pricing.ts` to dynamically resolve per-model token prices.
 - **`web/components/message-block.tsx`** — Message rendering with tool icons/previews for Claude, Codex (`exec_command`), and Gemini (`read_file`, `replace`, `write_file`) tool names
 - **`web/utils.ts`** — `getProviderInfo(model)` for model badges, `getCliProviderInfo(provider)` for CLI tool badges
 
 ### Key Implementation Details
 
 - **ES modules only** (`"type": "module"` in package.json)
-- **Path alias**: `@claude-run/api` resolves to `api/storage.ts` (configured in `web/vite.config.ts`). Frontend imports types from this alias.
+- **Path alias**: `@agents-run/api` resolves to `api/storage.ts` (configured in `web/vite.config.ts`). Frontend imports types from this alias.
 - **CLI entry**: `api/index.ts` uses commander.js
 - **Production**: Web assets built to `dist/web/`, served by Hono's serveStatic
 - **SSE heartbeat**: 30 seconds on all SSE connections

@@ -1,9 +1,10 @@
 {
-  "name": "claude-run",
+  "name": "agents-run",
   "version": "0.2.2",
   "description": "A multi-provider web UI for browsing AI coding session history",
   "type": "module",
   "bin": {
+    "agents-run": "./dist/index.js",
     "agent-run": "./dist/index.js",
     "claude-run": "./dist/index.js"
   },
@@ -73,10 +74,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SunZhiC/claude-run.git"
+    "url": "git+https://github.com/SunZhiC/agents-run.git"
   },
-  "homepage": "https://github.com/SunZhiC/claude-run#readme",
+  "homepage": "https://github.com/SunZhiC/agents-run#readme",
   "bugs": {
-    "url": "https://github.com/SunZhiC/claude-run/issues"
+    "url": "https://github.com/SunZhiC/agents-run/issues"
   }
 }

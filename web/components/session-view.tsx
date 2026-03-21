@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
-import type { ConversationMessage, Session, SubagentInfo, SessionTokenUsage, SessionMeta, SessionCosts } from "@claude-run/api";
+import type { ConversationMessage, Session, SubagentInfo, SessionTokenUsage, SessionMeta, SessionCosts } from "@agents-run/api";
 import MessageBlock from "./message-block";
 import ScrollToBottomButton from "./scroll-to-bottom-button";
 import { MarkdownExportButton } from "./markdown-export";

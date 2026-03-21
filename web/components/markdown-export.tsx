@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import type { Session } from "@claude-run/api";
+import type { Session } from "@agents-run/api";
 import { Copy, Check, X, FileText } from "lucide-react";
 
 function getAssistantLabel(provider?: string): string {
@@ -114,7 +114,7 @@ export function MarkdownExportButton({ session, messages }: MarkdownExportProps)
     }
 
     markdown += `---\n\n`;
-    markdown += `*Exported from Claude Run • ${new Date().toLocaleString()}*`;
+    markdown += `*Exported from Agents Run • ${new Date().toLocaleString()}*`;
 
     return markdown;
   }, [session, messages]);

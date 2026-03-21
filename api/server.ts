@@ -409,7 +409,7 @@ export function createServer(options: ServerOptions) {
       // 4. Start HTTP server
       const openUrl = `http://localhost:${dev ? 12000 : port}/`;
 
-      console.log(`\n  claude-run is running at ${openUrl}\n`);
+      console.log(`\n  Agents Run is running at ${openUrl}\n`);
       if (!dev && shouldOpen) {
         open(openUrl).catch(console.error);
       }

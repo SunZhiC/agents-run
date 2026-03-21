@@ -1,5 +1,5 @@
 import { useState, memo } from "react";
-import type { ConversationMessage, ContentBlock } from "@claude-run/api";
+import type { ConversationMessage, ContentBlock } from "@agents-run/api";
 import {
   Lightbulb,
   Wrench,
