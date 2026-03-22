@@ -1,6 +1,6 @@
 {
   "name": "agents-run",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Local web UI for browsing AI coding session history across multiple providers",
   "type": "module",
   "bin": {
