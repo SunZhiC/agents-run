@@ -341,7 +341,7 @@ const SessionList = memo(function SessionList(props: SessionListProps) {
                         return null;
                       })()}
                     </span>
-                    {onDeleteSession && (!(session as any).provider || (session as any).provider === "claude") ? (
+                    {onDeleteSession && session.capabilities?.delete ? (
                       <>
                         <span className="text-[10px] text-zinc-600 group-hover:invisible h-4 flex items-center gap-1">
                           <span>{formatTime(session.timestamp)}</span>

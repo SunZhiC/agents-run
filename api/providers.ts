@@ -20,6 +20,8 @@ const ADAPTER_PRIORITY: Record<ProviderName, number> = {
   claude: 1,
 };
 
+export type DeleteSessionResult = "deleted" | "not_found" | "unsupported";
+
 function createClaudeAdapter(claudeDir?: string): ProviderAdapter {
   storage.initStorage(claudeDir);
 
@@ -45,6 +47,7 @@ function createClaudeAdapter(claudeDir?: string): ProviderAdapter {
     getSessionMeta: (id) => storage.getSessionMeta(id),
     searchConversations: (q) => storage.searchConversations(q),
     ownsSession: (id) => storage.hasSession(id),
+    deleteSession: (id) => storage.deleteSession(id),
     invalidateHistoryCache: () => storage.invalidateHistoryCache(),
     invalidateSessionMeta: (id) => storage.invalidateSessionMeta(id),
     addToFileIndex: (id, path) => storage.addToFileIndex(id, path),
@@ -104,7 +107,18 @@ export class ProviderManager {
     const targets = provider
       ? this.adapters.filter((a) => a.name === provider)
       : this.adapters;
-    const results = await Promise.all(targets.map((a) => a.getSessions()));
+    const results = await Promise.all(
+      targets.map(async (adapter) => {
+        const sessions = await adapter.getSessions();
+        return sessions.map((session) => ({
+          ...session,
+          capabilities: {
+            ...session.capabilities,
+            delete: typeof adapter.deleteSession === "function",
+          },
+        }));
+      }),
+    );
     return results.flat().sort((a, b) => b.timestamp - a.timestamp);
   }
 
@@ -155,6 +169,19 @@ export class ProviderManager {
 
   getProviderForSession(sessionId: string): ProviderName | undefined {
     return this.findAdapter(sessionId)?.name;
+  }
+
+  async deleteSession(sessionId: string): Promise<DeleteSessionResult> {
+    const adapter = this.findAdapter(sessionId);
+    if (!adapter) {
+      return "not_found";
+    }
+    if (!adapter.deleteSession) {
+      return "unsupported";
+    }
+
+    const deleted = await adapter.deleteSession(sessionId);
+    return deleted ? "deleted" : "not_found";
   }
 
   private findAdapter(sessionId: string): ProviderAdapter | undefined {

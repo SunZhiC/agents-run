@@ -20,6 +20,7 @@ export interface ProviderAdapter {
   getSessionMeta(sessionId: string): Promise<SessionMeta>;
   searchConversations(query: string): Promise<SearchResult[]>;
   ownsSession(sessionId: string): boolean;
+  deleteSession?(sessionId: string): Promise<boolean>;
   invalidateHistoryCache(): void;
   invalidateSessionMeta(sessionId: string): void;
   addToFileIndex(sessionId: string, filePath: string): void;

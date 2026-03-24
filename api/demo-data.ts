@@ -701,6 +701,10 @@ export const demoManager = {
     return demoSessionsById.get(sessionId)?.session.provider;
   },
 
+  async deleteSession(): Promise<"unsupported"> {
+    return "unsupported";
+  },
+
   getAvailableProviders(): ProviderName[] {
     return ["claude", "codex", "gemini"];
   },

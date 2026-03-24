@@ -1,4 +1,4 @@
-import { readdir, readFile, stat, open } from "fs/promises";
+import { readdir, readFile, rename, stat, open, unlink, writeFile } from "fs/promises";
 import { join, basename } from "path";
 import { homedir } from "os";
 import { createInterface } from "readline";
@@ -618,6 +618,20 @@ export class CodexAdapter implements ProviderAdapter {
     return this.fileIndex.has(sessionId);
   }
 
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const filePath = this.fileIndex.get(sessionId);
+    const removedIndexEntry = await this.removeSessionIndexEntry(sessionId);
+    const removedSessionFile = await this.removeSessionFile(filePath);
+    await this.removeShellSnapshots(sessionId);
+
+    if (!removedIndexEntry && !removedSessionFile) {
+      return false;
+    }
+
+    this.removeSessionFromCache(sessionId);
+    return true;
+  }
+
   resolveSessionId(filePath: string): string | null {
     if (filePath.endsWith("session_index.jsonl")) return null;
     if (filePath.endsWith("history.jsonl")) return null;
@@ -703,5 +717,85 @@ export class CodexAdapter implements ProviderAdapter {
   addToFileIndex(sessionId: string, filePath: string): void {
     this.fileIndex.set(sessionId, filePath);
     this.reverseFileIndex.set(filePath, sessionId);
+  }
+
+  private removeSessionFromCache(sessionId: string): void {
+    const filePath = this.fileIndex.get(sessionId);
+    if (filePath) {
+      this.reverseFileIndex.delete(filePath);
+    }
+    this.fileIndex.delete(sessionId);
+    this.sessionIndex.delete(sessionId);
+    this.sessionMetaCache.delete(sessionId);
+    this.historyCache = null;
+  }
+
+  private async removeSessionIndexEntry(sessionId: string): Promise<boolean> {
+    const indexPath = join(this.codexDir, "session_index.jsonl");
+
+    try {
+      const content = await readFile(indexPath, "utf-8");
+      const lines = content.split("\n").filter(Boolean);
+      const filteredLines = lines.filter((line) => {
+        try {
+          const entry = JSON.parse(line);
+          return entry.id !== sessionId;
+        } catch {
+          return true;
+        }
+      });
+
+      if (filteredLines.length === lines.length) {
+        return false;
+      }
+
+      const tempPath = `${indexPath}.tmp`;
+      const nextContent = filteredLines.length > 0
+        ? `${filteredLines.join("\n")}\n`
+        : "";
+      await writeFile(tempPath, nextContent, "utf-8");
+      await rename(tempPath, indexPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async removeSessionFile(filePath?: string): Promise<boolean> {
+    if (!filePath) {
+      return false;
+    }
+
+    try {
+      await unlink(filePath);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return true;
+      }
+      return false;
+    }
+  }
+
+  private async removeShellSnapshots(sessionId: string): Promise<void> {
+    const snapshotsDir = join(this.codexDir, "shell_snapshots");
+
+    try {
+      const entries = await readdir(snapshotsDir, { withFileTypes: true });
+      const targets = entries.filter(
+        (entry) =>
+          entry.isFile()
+          && entry.name.startsWith(`${sessionId}.`)
+          && entry.name.endsWith(".sh"),
+      );
+
+      await Promise.all(
+        targets.map((entry) =>
+          unlink(join(snapshotsDir, entry.name)).catch(() => {}),
+        ),
+      );
+    } catch {
+      // shell snapshots are best-effort cleanup
+    }
   }
 }

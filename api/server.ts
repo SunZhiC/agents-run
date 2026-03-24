@@ -8,7 +8,6 @@ import {
   getClaudeDir,
   getSubagentMap,
   getSubagentConversation,
-  deleteSession,
   renameSession,
 } from "./storage";
 import type { ProviderAdapter, ProviderName } from "./provider-types";
@@ -107,12 +106,12 @@ export function createServer(options: ServerOptions) {
       return c.json({ error: "Delete not supported in demo mode" }, 400);
     }
     const sessionId = c.req.param("id");
-    const sessionProvider = dataSource.getProviderForSession(sessionId);
-    if (sessionProvider && sessionProvider !== "claude") {
+    const result = await dataSource.deleteSession(sessionId);
+    if (result === "unsupported") {
       return c.json({ error: "Delete not supported for this provider" }, 400);
     }
-    const deleted = await deleteSession(sessionId);
-    if (deleted) {
+    if (result === "deleted") {
+      emitHistoryChange();
       return c.json({ success: true });
     }
     return c.json({ error: "Session not found" }, 404);
@@ -201,6 +200,7 @@ export function createServer(options: ServerOptions) {
           model: session.model ?? null,
           provider: session.provider,
           surface: session.surface ?? null,
+          canDelete: session.capabilities?.delete ?? false,
         });
 
       const cleanup = () => {

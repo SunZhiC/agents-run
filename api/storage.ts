@@ -27,6 +27,9 @@ export interface Session {
   model?: string;
   provider: "claude" | "codex" | "gemini";
   surface?: "cli" | "tui" | "app" | "exec";
+  capabilities?: {
+    delete?: boolean;
+  };
 }
 
 export interface ConversationMessage {

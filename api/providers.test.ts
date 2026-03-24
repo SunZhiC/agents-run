@@ -28,6 +28,7 @@ function createAdapter(
   name: ProviderName,
   ownsSession: boolean,
   label: string = name,
+  supportsDelete = false,
 ): ProviderAdapter {
   const conversation: ConversationMessage[] = [
     {
@@ -43,18 +44,30 @@ function createAdapter(
     nextOffset: label.length,
   };
   const meta = createMeta(`${label}-model`);
+  const sessions: Session[] = [
+    {
+      id: `${label}-session`,
+      display: `${label}-display`,
+      timestamp: 1,
+      project: `/tmp/${label}`,
+      projectName: label,
+      messageCount: 1,
+      provider: name,
+    },
+  ];
 
   return {
     name,
     init: vi.fn(async () => {}),
     getWatchPaths: vi.fn(() => ({ paths: [], depth: 0 })),
-    getSessions: vi.fn(async (): Promise<Session[]> => []),
+    getSessions: vi.fn(async (): Promise<Session[]> => sessions),
     getProjects: vi.fn(async (): Promise<string[]> => []),
     getConversation: vi.fn(async () => conversation),
     getConversationStream: vi.fn(async () => stream),
     getSessionMeta: vi.fn(async () => meta),
     searchConversations: vi.fn(async (): Promise<SearchResult[]> => []),
     ownsSession: vi.fn(() => ownsSession),
+    deleteSession: supportsDelete ? vi.fn(async () => true) : undefined,
     invalidateHistoryCache: vi.fn(),
     invalidateSessionMeta: vi.fn(),
     addToFileIndex: vi.fn(),
@@ -143,5 +156,53 @@ describe("ProviderManager", () => {
     expect(gemini.getSessionMeta).toHaveBeenCalledWith("session-2");
     expect(codex.getSessionMeta).not.toHaveBeenCalled();
     expect(claude.getSessionMeta).not.toHaveBeenCalled();
+  });
+
+  it("exposes delete capability from the owning adapter", async () => {
+    const claude = createAdapter("claude", true, "claude", true);
+    const codex = createAdapter("codex", false, "codex", false);
+    const manager = new ProviderManager();
+
+    (manager as unknown as { adapters: ProviderAdapter[] }).adapters = [
+      claude,
+      codex,
+    ];
+
+    const sessions = await manager.getSessions();
+
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        id: "claude-session",
+        capabilities: { delete: true },
+      }),
+      expect.objectContaining({
+        id: "codex-session",
+        capabilities: { delete: false },
+      }),
+    ]);
+  });
+
+  it("delegates delete to the preferred adapter", async () => {
+    const claude = createAdapter("claude", true, "claude", true);
+    const codex = createAdapter("codex", true, "codex", true);
+    const manager = new ProviderManager();
+
+    (manager as unknown as { adapters: ProviderAdapter[] }).adapters = [
+      claude,
+      codex,
+    ];
+
+    await expect(manager.deleteSession("session-1")).resolves.toBe("deleted");
+    expect(codex.deleteSession).toHaveBeenCalledWith("session-1");
+    expect(claude.deleteSession).not.toHaveBeenCalled();
+  });
+
+  it("returns unsupported when the owning adapter does not implement delete", async () => {
+    const gemini = createAdapter("gemini", true, "gemini", false);
+    const manager = new ProviderManager();
+
+    (manager as unknown as { adapters: ProviderAdapter[] }).adapters = [gemini];
+
+    await expect(manager.deleteSession("session-3")).resolves.toBe("unsupported");
   });
 });

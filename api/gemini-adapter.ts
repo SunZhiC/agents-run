@@ -1,4 +1,4 @@
-import { readdir, readFile } from "fs/promises";
+import { readdir, readFile, unlink } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 import type { ProviderAdapter } from "./provider-types";
@@ -449,6 +449,24 @@ export class GeminiAdapter implements ProviderAdapter {
     return this.fileIndex.has(sessionId);
   }
 
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const filePath = this.fileIndex.get(sessionId);
+    if (!filePath) {
+      return false;
+    }
+
+    try {
+      await unlink(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        return false;
+      }
+    }
+
+    this.removeSessionFromCache(sessionId);
+    return true;
+  }
+
   resolveSessionId(filePath: string): string | null {
     if (filePath.endsWith("projects.json")) return null;
     return this.reverseFileIndex.get(filePath) ?? null;
@@ -554,5 +572,15 @@ export class GeminiAdapter implements ProviderAdapter {
   addToFileIndex(sessionId: string, filePath: string): void {
     this.fileIndex.set(sessionId, filePath);
     this.reverseFileIndex.set(filePath, sessionId);
+  }
+
+  private removeSessionFromCache(sessionId: string): void {
+    const filePath = this.fileIndex.get(sessionId);
+    if (filePath) {
+      this.reverseFileIndex.delete(filePath);
+    }
+    this.fileIndex.delete(sessionId);
+    this.fileSlugMap.delete(sessionId);
+    this.sessionCache.delete(sessionId);
   }
 }
