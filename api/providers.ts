@@ -163,7 +163,12 @@ export class ProviderManager {
     const targets = provider
       ? this.adapters.filter((a) => a.name === provider)
       : this.adapters;
-    const results = await Promise.all(targets.map((a) => a.searchConversations(query)));
+    const results = await Promise.all(
+      targets.map(async (a) => {
+        const r = await a.searchConversations(query);
+        return r.map((item) => ({ ...item, provider: a.name }));
+      })
+    );
     return results.flat().sort((a, b) => b.timestamp - a.timestamp);
   }
 
@@ -173,15 +178,23 @@ export class ProviderManager {
 
   async deleteSession(sessionId: string): Promise<DeleteSessionResult> {
     const adapter = this.findAdapter(sessionId);
-    if (!adapter) {
-      return "not_found";
-    }
-    if (!adapter.deleteSession) {
-      return "unsupported";
+    if (adapter) {
+      if (!adapter.deleteSession) {
+        return "unsupported";
+      }
+      const deleted = await adapter.deleteSession(sessionId);
+      return deleted ? "deleted" : "not_found";
     }
 
-    const deleted = await adapter.deleteSession(sessionId);
-    return deleted ? "deleted" : "not_found";
+    // Session file may not exist on disk but entry may still be in a history index.
+    // Try each adapter that supports delete.
+    for (const a of this.adapters) {
+      if (a.deleteSession) {
+        const deleted = await a.deleteSession(sessionId);
+        if (deleted) return "deleted";
+      }
+    }
+    return "not_found";
   }
 
   private findAdapter(sessionId: string): ProviderAdapter | undefined {

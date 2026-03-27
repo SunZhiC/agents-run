@@ -180,10 +180,19 @@ function App() {
   const [providers, setProviders] = useState<{ name: string; sessionCount: number }[]>([]);
 
   useEffect(() => {
-    fetch("/api/providers")
-      .then((res) => res.json())
-      .then(setProviders)
-      .catch(console.error);
+    let attempt = 0;
+    const maxRetries = 3;
+    const fetchProviders = () => {
+      fetch("/api/providers")
+        .then((res) => res.json())
+        .then(setProviders)
+        .catch(() => {
+          if (++attempt < maxRetries) {
+            setTimeout(fetchProviders, 2000);
+          }
+        });
+    };
+    fetchProviders();
   }, []);
 
   const handleCopyResumeCommand = useCallback(

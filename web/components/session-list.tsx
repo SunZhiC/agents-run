@@ -271,8 +271,20 @@ const SessionList = memo(function SessionList(props: SessionListProps) {
                     onClick={() => onSelectSession(result.sessionId)}
                   >
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-[10px] text-zinc-500 font-medium">
+                      <span className="text-[10px] text-zinc-500 font-medium flex items-center gap-1.5">
                         {result.projectName}
+                        {(() => {
+                          const rp = (result as any).provider;
+                          const cli = rp ? getCliProviderInfo(rp) : null;
+                          if (cli) {
+                            return (
+                              <span className={`px-1 py-px rounded text-[9px] font-medium border ${cli.color}`}>
+                                {cli.label}
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
                       </span>
                       <span className="text-[10px] text-zinc-600">
                         {result.matchCount} match{result.matchCount !== 1 ? "es" : ""}
@@ -353,6 +365,17 @@ const SessionList = memo(function SessionList(props: SessionListProps) {
                               {provider.label}
                             </span>
                           );
+                        }
+                        // Fallback for Claude sessions without model info
+                        if (sessionProvider) {
+                          const fallback = getCliProviderInfo(sessionProvider);
+                          if (fallback) {
+                            return (
+                              <span className={`px-1 py-px rounded text-[9px] font-medium border ${fallback.color}`}>
+                                {fallback.label}
+                              </span>
+                            );
+                          }
                         }
                         return null;
                       })()}

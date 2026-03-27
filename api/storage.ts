@@ -101,6 +101,7 @@ export interface SearchResult {
   timestamp: number;
   matchCount: number;
   firstMatch: SearchMatch;
+  provider?: "claude" | "codex" | "gemini";
 }
 
 let claudeDir = join(homedir(), ".claude");
