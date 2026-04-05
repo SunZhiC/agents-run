@@ -108,6 +108,7 @@ let claudeDir = join(homedir(), ".claude");
 let projectsDir = join(claudeDir, "projects");
 const fileIndex = new Map<string, string>();
 const sessionMetaCache = new Map<string, { count: number; model?: string }>();
+const orphanDisplayCache = new Map<string, string>();
 let historyCache: HistoryEntry[] | null = null;
 const pendingRequests = new Map<string, Promise<unknown>>();
 
@@ -143,6 +144,33 @@ function encodeProjectPath(path: string): string {
 function getProjectName(projectPath: string): string {
   const parts = projectPath.split("/").filter(Boolean);
   return parts[parts.length - 1] || projectPath;
+}
+
+function decodeProjectDir(dirName: string): string {
+  return dirName.startsWith("-")
+    ? "/" + dirName.slice(1).replace(/-/g, "/")
+    : dirName;
+}
+
+async function getOrphanSessionDisplay(sessionId: string, filePath: string): Promise<string> {
+  const cached = orphanDisplayCache.get(sessionId);
+  if (cached !== undefined) return cached;
+  let display = "";
+  try {
+    const content = await readFile(filePath, "utf-8");
+    const firstNewline = content.indexOf("\n");
+    const firstLine = firstNewline === -1 ? content : content.slice(0, firstNewline);
+    if (firstLine.trim()) {
+      const msg: ConversationMessage = JSON.parse(firstLine);
+      if (msg.type === "user" && msg.message?.content) {
+        const c = msg.message.content;
+        const text = typeof c === "string" ? c : c.filter((b) => b.type === "text").map((b) => (b as any).text).join(" ");
+        display = text.slice(0, 200);
+      }
+    }
+  } catch {}
+  orphanDisplayCache.set(sessionId, display);
+  return display;
 }
 
 async function buildFileIndex(): Promise<void> {
@@ -363,6 +391,40 @@ export async function getSessions(): Promise<Session[]> {
       })
     );
 
+    // Phase 3: include orphan sessions (on disk but not in history.jsonl)
+    const ORPHAN_BATCH = 100;
+    const orphanEntries = [...fileIndex.entries()].filter(([id]) => !seenIds.has(id));
+    for (let i = 0; i < orphanEntries.length; i += ORPHAN_BATCH) {
+      const batch = orphanEntries.slice(i, i + ORPHAN_BATCH);
+      const orphanSessions = await Promise.all(
+        batch.map(async ([sessionId, filePath]) => {
+          const { count: messageCount, model } = await countSessionMessages(sessionId);
+          if (messageCount === 0) return null;
+          const dirName = basename(dirname(filePath));
+          const project = decodeProjectDir(dirName);
+          let timestamp = Date.now();
+          try {
+            const fileStat = await stat(filePath);
+            timestamp = fileStat.mtimeMs;
+          } catch {}
+          const display = await getOrphanSessionDisplay(sessionId, filePath);
+          return {
+            id: sessionId,
+            display: display || sessionId,
+            timestamp,
+            project,
+            projectName: getProjectName(project),
+            messageCount,
+            model,
+            provider: "claude" as const,
+          };
+        })
+      );
+      for (const s of orphanSessions) {
+        if (s) sessions.push(s);
+      }
+    }
+
     return sessions.sort((a, b) => b.timestamp - a.timestamp);
   });
 }
@@ -375,6 +437,13 @@ export async function getProjects(): Promise<string[]> {
     if (entry.project) {
       projects.add(entry.project);
     }
+  }
+
+  // Include projects that only have orphan sessions
+  for (const [, filePath] of fileIndex) {
+    const dirName = basename(dirname(filePath));
+    const project = decodeProjectDir(dirName);
+    if (project) projects.add(project);
   }
 
   return [...projects].sort();
@@ -877,9 +946,7 @@ export async function searchConversations(query: string): Promise<SearchResult[]
       if (!matchesSessionId(sessionId, trimmedQuery)) continue;
 
       const dirName = basename(dirname(filePath));
-      const decodedProject = dirName.startsWith("-")
-        ? "/" + dirName.slice(1).replace(/-/g, "/")
-        : dirName;
+      const decodedProject = decodeProjectDir(dirName);
       let timestamp = Date.now();
       try {
         const fileStat = await stat(filePath);
@@ -919,9 +986,7 @@ export async function findOrphanSessions(query: string): Promise<Session[]> {
     if (!matchesSessionId(sessionId, trimmed)) continue;
 
     const dirName = basename(dirname(filePath));
-    const decodedProject = dirName.startsWith("-")
-      ? "/" + dirName.slice(1).replace(/-/g, "/")
-      : dirName;
+    const decodedProject = decodeProjectDir(dirName);
     let timestamp = Date.now();
     try {
       const fileStat = await stat(filePath);
