@@ -4,6 +4,7 @@ import { PanelLeft, Copy, Check, Pencil, X, Loader2 } from "lucide-react";
 import { formatTime, getCliProviderInfo } from "./utils";
 import SessionList from "./components/session-list";
 import SessionView from "./components/session-view";
+import ProjectPicker from "./components/project-picker";
 import { useEventSource } from "./hooks/use-event-source";
 
 
@@ -315,6 +316,15 @@ function App() {
     onError: handleSessionsError,
   });
 
+  const sessionCountByProject = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const s of sessions) {
+      if (selectedProvider && (s as any).provider !== selectedProvider) continue;
+      counts.set(s.project, (counts.get(s.project) ?? 0) + 1);
+    }
+    return counts;
+  }, [sessions, selectedProvider]);
+
   const filteredSessions = useMemo(() => {
     let result = sessions;
     if (selectedProject) {
@@ -354,24 +364,12 @@ function App() {
       {!sidebarCollapsed && (
         <aside className="w-80 border-r border-zinc-800/60 flex flex-col bg-zinc-950">
           <div className="border-b border-zinc-800/60">
-            <label htmlFor={"select-project"} className="block w-full px-1">
-              <select
-                id={"select-project"}
-                value={selectedProject || ""}
-                onChange={(e) => setSelectedProject(e.target.value || null)}
-                className="w-full h-[50px] bg-transparent text-zinc-300 text-sm focus:outline-none cursor-pointer px-5 py-4"
-              >
-                <option value="">All Projects</option>
-                {projects.map((project) => {
-                  const name = project.split("/").pop() || project;
-                  return (
-                    <option key={project} value={project}>
-                      {name}
-                    </option>
-                  );
-                })}
-              </select>
-            </label>
+            <ProjectPicker
+              projects={projects}
+              sessionCountByProject={sessionCountByProject}
+              selectedProject={selectedProject}
+              onSelectProject={setSelectedProject}
+            />
             {providers.length > 1 && (
               <label htmlFor="select-provider" className="block w-full px-1">
                 <select
